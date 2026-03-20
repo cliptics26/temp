@@ -40,16 +40,16 @@ RUN printf '#!/usr/bin/env python3\nimport sys\nfrom huggingface_hub.cli.hf impo
 # FastAPI server for HTTP API
 RUN pip install --no-cache-dir fastapi uvicorn
 
-# Clone model repos (code only, no weights)
-WORKDIR /workspace
-RUN git clone --depth 1 https://github.com/MeiGen-AI/MultiTalk.git && \
-    git clone --depth 1 https://github.com/MeiGen-AI/InfiniteTalk.git && \
-    git clone --depth 1 https://github.com/Omni-Avatar/OmniAvatar.git
+# Clone model repos to /opt/models (not /workspace, which gets overlaid by volume)
+RUN mkdir -p /opt/models
+RUN git clone --depth 1 https://github.com/MeiGen-AI/MultiTalk.git /opt/models/MultiTalk && \
+    git clone --depth 1 https://github.com/MeiGen-AI/InfiniteTalk.git /opt/models/InfiniteTalk && \
+    git clone --depth 1 https://github.com/Omni-Avatar/OmniAvatar.git /opt/models/OmniAvatar
 
 # Install repo-specific requirements (may overlap, that's fine)
-RUN cd /workspace/MultiTalk && pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
-RUN cd /workspace/InfiniteTalk && pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
-RUN cd /workspace/OmniAvatar && pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
+RUN cd /opt/models/MultiTalk && pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
+RUN cd /opt/models/InfiniteTalk && pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
+RUN cd /opt/models/OmniAvatar && pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
 
 # Re-pin versions that requirements.txt may have overwritten
 RUN pip install --no-cache-dir \
@@ -61,10 +61,10 @@ RUN pip install --no-cache-dir \
 
 # Patch 1: ArgSpec removed in Python 3.11
 RUN sed -i 's/from inspect import ArgSpec/from inspect import FullArgSpec as ArgSpec/' \
-    /workspace/MultiTalk/wan/multitalk.py
+    /opt/models/MultiTalk/wan/multitalk.py
 
 # Patch 2: Make Kokoro TTS import optional (we provide our own audio)
-RUN cd /workspace/MultiTalk && python3 -c "\
+RUN cd /opt/models/MultiTalk && python3 -c "\
 import pathlib; \
 p = pathlib.Path('generate_multitalk.py'); \
 t = p.read_text(); \
@@ -72,14 +72,21 @@ t = t.replace('from kokoro import KPipeline', 'try:\n    from kokoro import KPip
 p.write_text(t); \
 print('Patched Kokoro import')"
 
-# Copy server script
-COPY pod-server.py /workspace/pod-server.py
+# Copy server script to /app (not /workspace, which gets overlaid by volume mount)
+COPY pod-server.py /app/pod-server.py
 
-# Create output dirs
+# Create output dirs (will be recreated on volume at runtime)
 RUN mkdir -p /workspace/test /workspace/outputs /workspace/weights
 
 EXPOSE 8000
 
-# Weights are downloaded at runtime (stored on volume, not in image)
-# Start HTTP server
-CMD ["python3", "-u", "/workspace/pod-server.py"]
+# Entrypoint: copy model code to volume if needed, then start server
+# Volume mount at /workspace overlays Docker image's /workspace,
+# so we copy model repos from image to volume on first boot
+CMD ["bash", "-c", "\
+  mkdir -p /workspace/test /workspace/outputs /workspace/weights && \
+  [ ! -d /workspace/MultiTalk ] && cp -r /opt/models/MultiTalk /workspace/MultiTalk || true && \
+  [ ! -d /workspace/InfiniteTalk ] && cp -r /opt/models/InfiniteTalk /workspace/InfiniteTalk || true && \
+  [ ! -d /workspace/OmniAvatar ] && cp -r /opt/models/OmniAvatar /workspace/OmniAvatar || true && \
+  cp /app/pod-server.py /workspace/pod-server.py && \
+  python3 -u /app/pod-server.py"]
