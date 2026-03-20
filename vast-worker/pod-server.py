@@ -253,6 +253,10 @@ def _run_generation(job_id: str, req: GenerateRequest):
 def _run_multitalk(job_id, req, test_dir, output_dir):
     """Run MultiTalk generation."""
     import json
+    # Kill any zombie processes first
+    subprocess.run("pkill -9 -f generate_multitalk", shell=True, capture_output=True)
+    time.sleep(2)
+
     input_json = f"{test_dir}/multitalk_input.json"
     with open(input_json, "w") as f:
         json.dump({
@@ -262,12 +266,22 @@ def _run_multitalk(job_id, req, test_dir, output_dir):
         }, f)
 
     weights = "/workspace/weights"
+    fusionx = f"{weights}/fusionx/FusionX_LoRa/Wan2.1_I2V_14B_FusionX_LoRA.safetensors"
+    # Use FusionX if available, otherwise fall back to no LoRA
+    lora_args = ""
+    if os.path.exists(fusionx):
+        lora_args = (
+            f"--lora_dir {fusionx} --lora_scale 1.0 "
+            f"--sample_text_guide_scale 1 --sample_audio_guide_scale 2 "
+        )
     cmd = (
         f"cd /workspace/MultiTalk && PYTHONUNBUFFERED=1 python3 generate_multitalk.py "
         f"--ckpt_dir {weights}/Wan2.1-I2V-14B-480P "
         f"--wav2vec_dir {weights}/chinese-wav2vec2-base "
         f"--input_json {input_json} "
-        f"--sample_steps 20 --mode streaming "
+        f"--sample_steps 8 --mode streaming "
+        f"--offload_model False "
+        f"{lora_args}"
         f"--use_teacache --teacache_thresh 0.3 "
         f"--save_file {output_dir}/multitalk-test"
     )

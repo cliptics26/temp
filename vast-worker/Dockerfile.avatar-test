@@ -72,6 +72,12 @@ t = t.replace('from kokoro import KPipeline', 'try:\n    from kokoro import KPip
 p.write_text(t); \
 print('Patched Kokoro import')"
 
+# Download FusionX LoRA (371MB — small enough to bake in)
+RUN pip install --no-cache-dir "huggingface_hub[cli]" && \
+    huggingface-cli download vrgamedevgirl84/Wan14BT2VFusioniX \
+    --include "FusionX_LoRa/Wan2.1_I2V_14B_FusionX_LoRA.safetensors" \
+    --local-dir /opt/weights/fusionx
+
 # Copy server script to /app (not /workspace, which gets overlaid by volume mount)
 COPY pod-server.py /app/pod-server.py
 
@@ -88,5 +94,6 @@ CMD ["bash", "-c", "\
   [ ! -d /workspace/MultiTalk ] && cp -r /opt/models/MultiTalk /workspace/MultiTalk || true && \
   [ ! -d /workspace/InfiniteTalk ] && cp -r /opt/models/InfiniteTalk /workspace/InfiniteTalk || true && \
   [ ! -d /workspace/OmniAvatar ] && cp -r /opt/models/OmniAvatar /workspace/OmniAvatar || true && \
+  [ ! -d /workspace/weights/fusionx ] && cp -r /opt/weights/fusionx /workspace/weights/fusionx || true && \
   cp /app/pod-server.py /workspace/pod-server.py && \
   python3 -u /app/pod-server.py"]
