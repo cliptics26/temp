@@ -124,6 +124,16 @@ def generate_video(req: GenerateRequest, bg: BackgroundTasks):
     return {"job_id": job_id, "poll": f"/job/{job_id}"}
 
 
+@app.post("/generate-multitalk")
+def generate_multitalk(req: GenerateRequest, bg: BackgroundTasks):
+    """Start MultiTalk video generation. Poll /job/{id} for status."""
+    req.model = "multitalk"
+    job_id = str(uuid.uuid4())[:8]
+    jobs[job_id] = {"status": "queued", "model": "multitalk", "start": time.time()}
+    bg.add_task(_run_generation, job_id, req)
+    return {"job_id": job_id, "poll": f"/job/{job_id}"}
+
+
 @app.get("/job/{job_id}")
 def get_job(job_id: str):
     """Get status of a background job."""
