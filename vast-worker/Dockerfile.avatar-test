@@ -1,0 +1,85 @@
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+
+# System deps
+RUN apt-get update -qq && \
+    apt-get install -y -qq ffmpeg git-lfs wget curl && \
+    git lfs install && \
+    rm -rf /var/lib/apt/lists/*
+
+# Core ML deps — exact versions that work together
+RUN pip install --no-cache-dir \
+    torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 \
+    --index-url https://download.pytorch.org/whl/cu121
+
+RUN pip install --no-cache-dir \
+    xformers==0.0.28 \
+    --index-url https://download.pytorch.org/whl/cu121
+
+RUN pip install --no-cache-dir \
+    flash_attn==2.7.4.post1 \
+    ninja psutil packaging
+
+# Pinned versions — these MUST match exactly
+RUN pip install --no-cache-dir \
+    "diffusers==0.35.0" \
+    "transformers==4.49.0" \
+    "numpy>=1.23.5,<2" \
+    "optimum-quanto==0.2.6" \
+    "huggingface_hub[cli]" \
+    "accelerate>=1.1.1" \
+    librosa peft xfuser \
+    opencv-python-headless imageio imageio-ffmpeg \
+    easydict ftfy scikit-image loguru pyloudnorm \
+    tokenizers
+
+# Fix: huggingface-cli entry point not created on this image
+RUN printf '#!/usr/bin/env python3\nimport sys\nfrom huggingface_hub.cli.hf import main\nsys.exit(main())\n' \
+    > /usr/local/bin/huggingface-cli && \
+    chmod +x /usr/local/bin/huggingface-cli
+
+# FastAPI server for HTTP API
+RUN pip install --no-cache-dir fastapi uvicorn
+
+# Clone model repos (code only, no weights)
+WORKDIR /workspace
+RUN git clone --depth 1 https://github.com/MeiGen-AI/MultiTalk.git && \
+    git clone --depth 1 https://github.com/MeiGen-AI/InfiniteTalk.git && \
+    git clone --depth 1 https://github.com/Omni-Avatar/OmniAvatar.git
+
+# Install repo-specific requirements (may overlap, that's fine)
+RUN cd /workspace/MultiTalk && pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
+RUN cd /workspace/InfiniteTalk && pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
+RUN cd /workspace/OmniAvatar && pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
+
+# Re-pin versions that requirements.txt may have overwritten
+RUN pip install --no-cache-dir \
+    "diffusers==0.35.0" \
+    "transformers==4.49.0" \
+    "numpy>=1.23.5,<2" \
+    "flash_attn==2.7.4.post1" \
+    xfuser peft
+
+# Patch 1: ArgSpec removed in Python 3.11
+RUN sed -i 's/from inspect import ArgSpec/from inspect import FullArgSpec as ArgSpec/' \
+    /workspace/MultiTalk/wan/multitalk.py
+
+# Patch 2: Make Kokoro TTS import optional (we provide our own audio)
+RUN cd /workspace/MultiTalk && python3 -c "\
+import pathlib; \
+p = pathlib.Path('generate_multitalk.py'); \
+t = p.read_text(); \
+t = t.replace('from kokoro import KPipeline', 'try:\n    from kokoro import KPipeline\nexcept ImportError:\n    KPipeline = None'); \
+p.write_text(t); \
+print('Patched Kokoro import')"
+
+# Copy server script
+COPY pod-server.py /workspace/pod-server.py
+
+# Create output dirs
+RUN mkdir -p /workspace/test /workspace/outputs /workspace/weights
+
+EXPOSE 8000
+
+# Weights are downloaded at runtime (stored on volume, not in image)
+# Start HTTP server
+CMD ["python3", "-u", "/workspace/pod-server.py"]
