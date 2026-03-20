@@ -59,18 +59,27 @@ RUN pip install --no-cache-dir \
     "flash_attn==2.7.4.post1" \
     xfuser peft
 
-# Patch 1: ArgSpec removed in Python 3.11
+# Patch 1: ArgSpec removed in Python 3.11 (both MultiTalk and InfiniteTalk)
 RUN sed -i 's/from inspect import ArgSpec/from inspect import FullArgSpec as ArgSpec/' \
-    /opt/models/MultiTalk/wan/multitalk.py
+    /opt/models/MultiTalk/wan/multitalk.py \
+    /opt/models/InfiniteTalk/wan/multitalk.py
 
-# Patch 2: Make Kokoro TTS import optional (we provide our own audio)
+# Patch 2: Make Kokoro TTS import optional (both MultiTalk and InfiniteTalk)
 RUN cd /opt/models/MultiTalk && python3 -c "\
 import pathlib; \
 p = pathlib.Path('generate_multitalk.py'); \
 t = p.read_text(); \
 t = t.replace('from kokoro import KPipeline', 'try:\n    from kokoro import KPipeline\nexcept ImportError:\n    KPipeline = None'); \
 p.write_text(t); \
-print('Patched Kokoro import')"
+print('Patched MultiTalk Kokoro import')"
+
+RUN cd /opt/models/InfiniteTalk && python3 -c "\
+import pathlib; \
+p = pathlib.Path('generate_infinitetalk.py'); \
+t = p.read_text(); \
+t = t.replace('from kokoro import KPipeline', 'try:\n    from kokoro import KPipeline\nexcept ImportError:\n    KPipeline = None'); \
+p.write_text(t); \
+print('Patched InfiniteTalk Kokoro import')"
 
 # Download FusionX LoRA (371MB — small enough to bake in)
 RUN pip install --no-cache-dir "huggingface_hub[cli]" && \
