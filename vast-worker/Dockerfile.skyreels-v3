@@ -13,7 +13,10 @@ RUN cd /opt/SkyReels-V3 && \
     grep -v "^flash_attn" requirements.txt | pip install --no-cache-dir -r /dev/stdin && \
     pip install --no-cache-dir flash-attn av
 
-# Patch: support local file paths (not just URLs) for input_image and input_audio
+# SageAttention 2.2 — 2x attention speedup (DO NOT use v3, causes distorted frames)
+RUN pip install --no-cache-dir sageattention==2.2.0 --no-build-isolation
+
+# Patch 1: Support local file paths (not just URLs)
 RUN python3 -c "\
 import pathlib; \
 p = pathlib.Path('/opt/SkyReels-V3/generate_video.py'); \
@@ -24,14 +27,48 @@ t = t.replace(old, new); \
 p.write_text(t); \
 print('Patched maybe_download')"
 
+# Patch 2: Fix parallel audio conflict — use UUID-based processed_audio dirs
+RUN python3 -c "\
+import pathlib; \
+p = pathlib.Path('/opt/SkyReels-V3/generate_video.py'); \
+t = p.read_text(); \
+t = t.replace(\
+    'input_data, _ = preprocess_audio(args.model_id, input_data, \"processed_audio\")', \
+    'import uuid; _audio_dir = f\"processed_audio_{uuid.uuid4().hex[:8]}\"; input_data, _ = preprocess_audio(args.model_id, input_data, _audio_dir)'); \
+p.write_text(t); \
+print('Patched processed_audio UUID')"
+
+# Patch 3: Enable SageAttention 2.2 globally
+RUN python3 -c "\
+import pathlib; \
+p = pathlib.Path('/opt/SkyReels-V3/generate_video.py'); \
+t = p.read_text(); \
+sage_import = 'import torch\n'; \
+sage_patch = 'import torch\ntry:\n    from sageattention import sageattn\n    torch.nn.functional.scaled_dot_product_attention = sageattn\n    print(\"SageAttention 2.2 enabled\")\nexcept ImportError:\n    print(\"SageAttention not available, using default attention\")\n'; \
+t = t.replace(sage_import, sage_patch, 1); \
+p.write_text(t); \
+print('Patched SageAttention')"
+
+# FastAPI server for HTTP API
+RUN pip install --no-cache-dir fastapi uvicorn
+
+# Copy server script
+COPY pod-server.py /app/pod-server.py
+
 # Create dirs
 RUN mkdir -p /workspace/test /workspace/outputs
 
 WORKDIR /workspace
 
-# Model downloads at runtime (55GB, cached on volume)
-# --low_vram flag enables FP8 (13GB VRAM, fits on 24GB+ GPUs)
+ENV HF_HOME=/workspace/.cache/huggingface
+ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8000
+
+# On boot: copy code to workspace (volume overlays /workspace), start server
 CMD ["bash", "-c", "\
   cp -r /opt/SkyReels-V3 /workspace/SkyReels-V3 2>/dev/null || true && \
   mkdir -p /workspace/test /workspace/outputs && \
-  echo 'Ready. Run: cd /workspace/SkyReels-V3 && python generate_video.py --task_type talking_avatar --model_id Skywork/SkyReels-V3-A2V-19B --low_vram ...'"]
+  cp /app/pod-server.py /workspace/pod-server.py 2>/dev/null || true && \
+  python3 -u /app/pod-server.py"]
